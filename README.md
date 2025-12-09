@@ -185,12 +185,12 @@ result = DeepFace.verify(
 ### Folder Structure
 ```
 backend/database/
-â”œâ”€â”€ faces/
-â”‚   â”œâ”€â”€ john_doe_20241130120000/
-â”‚   â”‚   â””â”€â”€ face_1.jpg
-â”‚   â””â”€â”€ jane_smith_20241130120100/
-â”‚       â””â”€â”€ face_1.jpg
-â””â”€â”€ people.json
+├── faces/
+│   ├── john_doe_20241130120000/
+│   │   └── face_1.jpg
+│   └── jane_smith_20241130120100/
+│       └── face_1.jpg
+└── people.json
 ```
 
 ### people.json Format
