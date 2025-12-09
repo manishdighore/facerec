@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+*.log
+.venv
+
+# Database (will be mounted as volume)
+database/
+
+# Virtual environment
+.venv/

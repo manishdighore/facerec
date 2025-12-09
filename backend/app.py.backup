@@ -1,0 +1,419 @@
+from flask import Flask, request, jsonify, send_file
+from flask_cors import CORS
+from deepface import DeepFace
+from deepface.detectors import FaceDetector
+import os
+import json
+import base64
+import cv2
+import numpy as np
+from datetime import datetime
+import traceback
+import uuid
+
+app = Flask(__name__)
+CORS(app)
+
+# Database configuration
+DB_FOLDER = os.path.join(os.path.dirname(__file__), 'database', 'faces')
+DB_JSON = os.path.join(os.path.dirname(__file__), 'database', 'people.json')
+
+# Create database folder if it doesn't exist
+os.makedirs(DB_FOLDER, exist_ok=True)
+
+# Initialize JSON database
+if not os.path.exists(DB_JSON):
+    with open(DB_JSON, 'w') as f:
+        json.dump([], f)
+
+# Global model cache
+MODEL_NAME = 'VGG-Face'
+DETECTOR_BACKEND = 'opencv'
+RECOGNITION_THRESHOLD = 0.6
+
+print("Loading DeepFace model on startup...")
+try:
+    print(f"Initializing {MODEL_NAME} model and {DETECTOR_BACKEND} detector...")
+    # Initialize face detector
+    face_detector = FaceDetector.build_model(DETECTOR_BACKEND)
+    print(f"✓ Backend ready! Model will be loaded on first inference.")
+except Exception as e:
+    print(f"Warning: {str(e)}")
+    face_detector = None
+
+def load_database():
+    """Load the people database from JSON"""
+    try:
+        with open(DB_JSON, 'r') as f:
+            return json.load(f)
+    except:
+        return []
+
+def save_database(data):
+    """Save the people database to JSON"""
+    with open(DB_JSON, 'w') as f:
+        json.dump(data, f, indent=2)
+
+def base64_to_image(base64_string):
+    """Convert base64 string to OpenCV image"""
+    # Remove header if present
+    if ',' in base64_string:
+        base64_string = base64_string.split(',')[1]
+    
+    img_data = base64.b64decode(base64_string)
+    nparr = np.frombuffer(img_data, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    return img
+
+def process_uploaded_file(file_storage):
+    """Process an uploaded file from form data"""
+    try:
+        # Read file bytes
+        file_bytes = file_storage.read()
+        nparr = np.frombuffer(file_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        return img
+    except Exception as e:
+        raise ValueError(f"Failed to process uploaded file: {str(e)}")
+
+def detect_and_extract_faces(img):
+    """Detect faces in image and return their locations and extracted faces"""
+    try:
+        # Use DeepFace to detect faces
+        face_objs = DeepFace.extract_faces(
+            img_path=img,
+            detector_backend='opencv',
+            enforce_detection=False,
+            align=True
+        )
+        
+        results = []
+        for face_obj in face_objs:
+            # Get facial area (bounding box)
+            facial_area = face_obj.get('facial_area', {})
+            face_img = face_obj.get('face')
+            confidence = face_obj.get('confidence', 0)
+            
+            results.append({
+                'bbox': {
+                    'x': facial_area.get('x', 0),
+                    'y': facial_area.get('y', 0),
+                    'w': facial_area.get('w', 0),
+                    'h': facial_area.get('h', 0)
+                },
+                'face': face_img,
+                'confidence': confidence
+            })
+        
+        return results
+    except Exception as e:
+        print(f"Error detecting faces: {str(e)}")
+        return []
+
+def recognize_face(face_img, people):
+    """Recognize a single face against database"""
+    # Save face temporarily for comparison
+    temp_path = os.path.join(DATABASE_DIR, 'temp_face.jpg')
+    cv2.imwrite(temp_path, (face_img * 255).astype(np.uint8))
+    
+    try:
+        best_match = None
+        best_distance = float('inf')
+        
+        for person in people:
+            person_image_path = os.path.join(IMAGES_DIR, f"{person['id']}.jpg")
+            if not os.path.exists(person_image_path):
+                continue
+            
+            try:
+                result = DeepFace.verify(
+                    img1_path=temp_path,
+                    img2_path=person_image_path,
+                    model_name='VGG-Face',
+                    enforce_detection=False
+                )
+                
+                distance = result['distance']
+                if distance < best_distance and distance < THRESHOLD:
+                    best_distance = distance
+                    best_match = person
+            except Exception as e:
+                print(f"Error comparing with {person['name']}: {str(e)}")
+                continue
+        
+        if best_match:
+            return {
+                'recognized': True,
+                'person': {
+                    'name': best_match['name'],
+                    'id': best_match['id'],
+                    'employee_id': best_match.get('employee_id'),
+                    'distance': best_distance,
+                    'confidence': (1 - best_distance) * 100
+                }
+            }
+        else:
+            return {
+                'recognized': False,
+                'person': {
+                    'name': 'Unknown',
+                    'id': None
+                }
+            }
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+@app.route('/api/detect-and-recognize', methods=['POST'])
+def detect_and_recognize():
+    """Detect all faces in image and recognize each one"""
+    try:
+        data = request.json
+        image_base64 = data.get('image')
+        
+        if not image_base64:
+            return jsonify({'error': 'No image provided'}), 400
+        
+        # Convert base64 to image
+        img = base64_to_image(image_base64)
+        
+        # Detect all faces in the image
+        detected_faces = detect_and_extract_faces(img)
+        
+        if not detected_faces:
+            return jsonify({
+                'faces': [],
+                'message': 'No faces detected'
+            })
+        
+        # Load database
+        people = load_database()
+        
+        # Recognize each detected face
+        results = []
+        for face_data in detected_faces:
+            # Save face image temporarily for recognition
+            temp_face_path = os.path.join(DB_FOLDER, f'temp_face_{uuid.uuid4().hex}.jpg')
+            face_img = (face_data['face'] * 255).astype(np.uint8)
+            cv2.imwrite(temp_face_path, cv2.cvtColor(face_img, cv2.COLOR_RGB2BGR))
+            
+            # Try to recognize
+            if people:
+                recognition_result = recognize_face(temp_face_path, people)
+            else:
+                recognition_result = None
+            
+            # Clean up temp file
+            if os.path.exists(temp_face_path):
+                os.remove(temp_face_path)
+            
+            # Build result for this face
+            face_result = {
+                'bbox': {
+                    'x': face_data['x'],
+                    'y': face_data['y'],
+                    'w': face_data['w'],
+                    'h': face_data['h']
+                },
+                'detection_confidence': face_data['confidence']
+            }
+            
+            if recognition_result:
+                face_result['recognized'] = True
+                face_result['person'] = recognition_result
+            else:
+                face_result['recognized'] = False
+                face_result['person'] = {
+                    'name': 'Unknown',
+                    'id': None
+                }
+            
+            results.append(face_result)
+        
+        return jsonify({
+            'faces': results,
+            'count': len(results)
+        })
+            
+    except Exception as e:
+        print(f"Error in detect_and_recognize: {str(e)}")
+        print(traceback.format_exc())
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/people', methods=['GET'])
+def get_people():
+    """Get all registered people"""
+    try:
+        people = load_database()
+        return jsonify({'people': people})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/register', methods=['POST'])
+def register_face():
+    """Register a new face"""
+    try:
+                    'name': best_match['name'],
+                    'email': best_match.get('email', ''),
+                    'added_date': best_match.get('added_date', '')
+                },
+                'confidence': round(confidence, 2),
+                'distance': round(best_distance, 4),
+                'threshold': threshold
+            })
+        else:
+            return jsonify({
+                'identified': False,
+                'message': 'No matching face found',
+                'person': None,
+                'confidence': 0,
+                'best_distance': round(best_distance, 4) if best_distance != float('inf') else None
+            })
+            
+    except Exception as e:
+        print(f"Error in recognize_face: {str(e)}")
+        print(traceback.format_exc())
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/register', methods=['POST'])
+def register_face():
+    """Register a new face in the database - supports both JSON (base64) and multipart/form-data (file upload)"""
+    try:
+        img = None
+        name = None
+        email = ''
+        
+        # Check if it's a file upload (multipart/form-data) or JSON (base64)
+        if request.content_type and 'multipart/form-data' in request.content_type:
+            # Handle file upload
+            name = request.form.get('name')
+            email = request.form.get('email', '')
+            
+            if 'image' not in request.files:
+                return jsonify({'error': 'No image file provided'}), 400
+            
+            file = request.files['image']
+@app.route('/api/register', methods=['POST'])
+def register_face():
+    """Register a new face in the database with employee ID - supports both JSON (base64) and multipart/form-data (file upload)"""
+    try:
+        img = None
+        name = None
+        email = ''
+        employee_id = ''
+        
+        # Check if it's a file upload (multipart/form-data) or JSON (base64)
+        if request.content_type and 'multipart/form-data' in request.content_type:
+            # Handle file upload
+            name = request.form.get('name')
+            email = request.form.get('email', '')
+            employee_id = request.form.get('employee_id', '')
+            
+            if 'image' not in request.files:
+                return jsonify({'error': 'No image file provided'}), 400
+            
+            file = request.files['image']
+            if file.filename == '':
+                return jsonify({'error': 'No file selected'}), 400
+            
+            img = process_uploaded_file(file)
+            
+        else:
+            # Handle JSON with base64 image
+            data = request.json
+            name = data.get('name')
+            email = data.get('email', '')
+            employee_id = data.get('employee_id', '')
+            image_base64 = data.get('image')
+            
+            if not image_base64:
+                return jsonify({'error': 'No image provided'}), 400
+            
+            img = base64_to_image(image_base64)
+        
+        if not name:
+            return jsonify({'error': 'Name is required'}), 400
+        
+        if img is None:
+            return jsonify({'error': 'Failed to process image'}), 400
+        
+        # Detect face in the image
+        detected_faces = detect_and_extract_faces(img)
+        if not detected_faces:
+            return jsonify({'error': 'No face detected in image'}), 400
+        
+        if len(detected_faces) > 1:
+            return jsonify({'error': 'Multiple faces detected. Please provide image with single face.'}), 400
+        
+        # Generate unique ID
+        person_id = str(uuid.uuid4())
+        
+        # Create person folder
+        person_folder = os.path.join(DB_FOLDER, person_id)
+        os.makedirs(person_folder, exist_ok=True)
+        
+        # Save image
+        img_path = os.path.join(person_folder, 'face_1.jpg')
+        cv2.imwrite(img_path, img)
+        
+        # Add to database
+        people = load_database()
+        person_data = {
+            'id': person_id,
+            'name': name,
+            'email': email,
+            'employee_id': employee_id,
+            'added_date': datetime.now().isoformat(),
+            'image_count': 1
+        }
+        people.append(person_data)
+        save_database(people)
+        
+        return jsonify({
+            'success': True,
+            'message': 'Face registered successfully',
+            'person': person_data
+        })
+        
+    except Exception as e:
+        print(f"Error in register_face: {str(e)}")
+@app.route('/api/people/<person_id>', methods=['DELETE'])
+def delete_person(person_id):
+    """Delete a person from the database"""
+    try:
+        people = load_database()
+        people = [p for p in people if p['id'] != person_id]
+        save_database(people)
+        
+        # Delete person's folder
+        person_folder = os.path.join(DB_FOLDER, person_id)
+        if os.path.exists(person_folder):
+            import shutil
+            shutil.rmtree(person_folder)
+        
+        return jsonify({'success': True, 'message': 'Person deleted successfully'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/people/<person_id>/image', methods=['GET'])
+def get_person_image(person_id):
+    """Get the registered face image for a person"""
+    try:
+        person_folder = os.path.join(DB_FOLDER, person_id)
+        if not os.path.exists(person_folder):
+            return jsonify({'error': 'Person not found'}), 404
+        
+        # Get first image
+        images = [f for f in os.listdir(person_folder) if f.endswith(('.jpg', '.jpeg', '.png'))]
+        if not images:
+            return jsonify({'error': 'No image found for person'}), 404
+        
+        image_path = os.path.join(person_folder, images[0])
+        return send_file(image_path, mimetype='image/jpeg')
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+if __name__ == '__main__':get('PORT', 5000))
+    debug = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
+    
+    app.run(debug=debug, host='0.0.0.0', port=port)

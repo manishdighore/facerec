@@ -1,0 +1,28 @@
+# Development Docker Compose Override
+# Use: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+  backend:
+    command: python app.py
+    volumes:
+      - ./backend:/app
+      - ./backend/database:/app/database
+    environment:
+      - FLASK_ENV=development
+      - FLASK_DEBUG=1
+    ports:
+      - "5000:5000"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    command: npm run dev
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
