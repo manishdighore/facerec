@@ -2,7 +2,7 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import Webcam from 'react-webcam';
-import { api, DetectedFace } from '@/lib/api';
+import { api, DetectedFace, DetectionResult } from '@/lib/api';
 import styles from './page.module.css';
 
 export default function Home() {
@@ -29,11 +29,32 @@ export default function Home() {
     loadPeople();
   }, []);
 
+  // Clear canvas function
+  const clearCanvas = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // Reset canvas size to force a full clear
+    canvas.width = canvas.width;
+  }, []);
+
+  // Clear canvas and faces when mode changes away from recognize
+  useEffect(() => {
+    if (mode !== 'recognize') {
+      clearCanvas();
+      setDetectedFaces([]);
+    }
+  }, [mode, clearCanvas]);
+
   useEffect(() => {
     if (isRealTime && mode === 'recognize') {
       startRealTimeDetection();
     } else {
       stopRealTimeDetection();
+      clearCanvas();
+      setDetectedFaces([]);
     }
     return () => stopRealTimeDetection();
   }, [isRealTime, mode]);
@@ -57,16 +78,43 @@ export default function Home() {
     }
   };
 
-  const drawBoundingBoxes = useCallback((faces: DetectedFace[], videoElement: HTMLVideoElement) => {
+  const drawBoundingBoxes = useCallback((
+    faces: DetectedFace[], 
+    videoElement: HTMLVideoElement,
+    imageWidth?: number,
+    imageHeight?: number
+  ) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Set canvas size to match video
-    canvas.width = videoElement.videoWidth;
-    canvas.height = videoElement.videoHeight;
+    // Get the actual displayed size of the video element using getBoundingClientRect
+    const videoRect = videoElement.getBoundingClientRect();
+    const displayWidth = videoRect.width;
+    const displayHeight = videoRect.height;
+    
+    // Set canvas internal resolution to match display size
+    canvas.width = displayWidth;
+    canvas.height = displayHeight;
+    
+    // The image sent to backend has dimensions imageWidth x imageHeight
+    // We need to scale coordinates from image space to display space
+    const srcWidth = imageWidth || videoElement.videoWidth;
+    const srcHeight = imageHeight || videoElement.videoHeight;
+    
+    const scaleX = displayWidth / srcWidth;
+    const scaleY = displayHeight / srcHeight;
+    
+    // Debug logging
+    if (faces.length > 0) {
+      console.log(`Source: ${srcWidth}x${srcHeight}, Display: ${displayWidth.toFixed(0)}x${displayHeight.toFixed(0)}, Scale: ${scaleX.toFixed(3)}x${scaleY.toFixed(3)}`);
+      const bbox = faces[0].bbox;
+      const scaledX = bbox.x * scaleX;
+      const scaledY = bbox.y * scaleY;
+      console.log(`Original bbox: x=${bbox.x}, y=${bbox.y} -> Scaled: x=${scaledX.toFixed(0)}, y=${scaledY.toFixed(0)}`);
+    }
 
     // Clear canvas
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -75,10 +123,7 @@ export default function Home() {
     faces.forEach((face) => {
       const { bbox, recognized, person } = face;
       
-      // Scale coordinates from detection resolution to video resolution
-      const scaleX = videoElement.videoWidth / 640;
-      const scaleY = videoElement.videoHeight / 480;
-      
+      // Scale coordinates from image space to display space
       const x = bbox.x * scaleX;
       const y = bbox.y * scaleY;
       const w = bbox.w * scaleX;
@@ -131,8 +176,9 @@ export default function Home() {
     setIsProcessing(true);
     try {
       const result = await api.detectAndRecognize(imageSrc);
+      
       setDetectedFaces(result.faces);
-      drawBoundingBoxes(result.faces, videoElement);
+      drawBoundingBoxes(result.faces, videoElement, result.image_width, result.image_height);
       setError('');
     } catch (err: any) {
       console.error('Detection error:', err);
@@ -146,7 +192,7 @@ export default function Home() {
     stopRealTimeDetection();
     realTimeIntervalRef.current = setInterval(() => {
       processFrame();
-    }, 1000); // Process every second
+    }, 200); // Process 5 times per second (200ms interval)
   };
 
   const stopRealTimeDetection = () => {
@@ -175,7 +221,7 @@ export default function Home() {
       
       const videoElement = webcamRef.current.video;
       if (videoElement) {
-        drawBoundingBoxes(result.faces, videoElement);
+        drawBoundingBoxes(result.faces, videoElement, result.image_width, result.image_height);
       }
     } catch (err: any) {
       setError(err.response?.data?.error || err.message || 'Detection failed');
@@ -292,6 +338,7 @@ export default function Home() {
                   ref={webcamRef}
                   audio={false}
                   screenshotFormat="image/jpeg"
+                  mirrored={true}
                   className={styles.webcam}
                   videoConstraints={{
                     width: 640,
@@ -299,7 +346,9 @@ export default function Home() {
                     facingMode: 'user',
                   }}
                 />
-                <canvas ref={canvasRef} className={styles.canvas} />
+                {mode === 'recognize' && (
+                  <canvas ref={canvasRef} className={styles.canvas} />
+                )}
               </div>
             </div>
           )}

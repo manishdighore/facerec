@@ -1,6 +1,9 @@
 import axios from 'axios';
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
+// API base URL - configure via NEXT_PUBLIC_API_URL environment variable
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5001';
+
+console.log('API Base URL:', API_BASE_URL);
 
 export interface Person {
   id: string;
@@ -37,6 +40,8 @@ export interface DetectionResult {
   faces: DetectedFace[];
   count: number;
   message?: string;
+  image_width?: number;
+  image_height?: number;
 }
 
 export interface RegisterResponse {

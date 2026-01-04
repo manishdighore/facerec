@@ -1,6 +1,20 @@
+# Flask backend
 flask
 flask-cors
-deepface
+
+# Image processing
 opencv-python
 numpy
-tf-keras
+Pillow
+
+# ONNX Runtime for model inference
+onnxruntime
+
+# Face alignment (scikit-image for similarity transform)
+scikit-image
+
+# Legacy dependencies (kept for backward compatibility with old app.py)
+# Uncomment if you want to use the old face_recognition library:
+# face_recognition
+# face_recognition_models @ git+https://github.com/ageitgey/face_recognition_models
+# dlib
