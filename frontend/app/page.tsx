@@ -8,12 +8,15 @@ import styles from './page.module.css';
 export default function Home() {
   const webcamRef = useRef<Webcam>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const videoCanvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const videoInputRef = useRef<HTMLInputElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
   
   const [isProcessing, setIsProcessing] = useState(false);
   const [detectedFaces, setDetectedFaces] = useState<DetectedFace[]>([]);
   const [error, setError] = useState<string>('');
-  const [mode, setMode] = useState<'recognize' | 'register' | 'gallery'>('recognize');
+  const [mode, setMode] = useState<'recognize' | 'register' | 'gallery' | 'video'>('recognize');
   const [registerName, setRegisterName] = useState('');
   const [registerEmail, setRegisterEmail] = useState('');
   const [registerEmployeeId, setRegisterEmployeeId] = useState('');
@@ -23,6 +26,13 @@ export default function Home() {
   const [uploadPreview, setUploadPreview] = useState<string | null>(null);
   const [isRealTime, setIsRealTime] = useState(false);
   const realTimeIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // Video processing state
+  const [uploadedVideo, setUploadedVideo] = useState<File | null>(null);
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [isVideoPlaying, setIsVideoPlaying] = useState(false);
+  const [isVideoProcessing, setIsVideoProcessing] = useState(false);
+  const videoProcessingRef = useRef<boolean>(false);
 
   useEffect(() => {
     checkBackendStatus();
@@ -192,7 +202,7 @@ export default function Home() {
     stopRealTimeDetection();
     realTimeIntervalRef.current = setInterval(() => {
       processFrame();
-    }, 200); // Process 5 times per second (200ms interval)
+    }, 100); // Process 10 times per second (100ms interval)
   };
 
   const stopRealTimeDetection = () => {
@@ -298,6 +308,141 @@ export default function Home() {
     }
   };
 
+  // Video processing functions
+  const handleVideoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setUploadedVideo(file);
+      const url = URL.createObjectURL(file);
+      setVideoUrl(url);
+      setDetectedFaces([]);
+      setIsVideoPlaying(false);
+      videoProcessingRef.current = false;
+    }
+  };
+
+  const clearVideo = () => {
+    if (videoUrl) {
+      URL.revokeObjectURL(videoUrl);
+    }
+    setUploadedVideo(null);
+    setVideoUrl(null);
+    setDetectedFaces([]);
+    setIsVideoPlaying(false);
+    setIsVideoProcessing(false);
+    videoProcessingRef.current = false;
+    if (videoInputRef.current) {
+      videoInputRef.current.value = '';
+    }
+  };
+
+  const processVideoFrame = useCallback(async () => {
+    if (!videoRef.current || !videoProcessingRef.current) return;
+    
+    const video = videoRef.current;
+    if (video.paused || video.ended) {
+      videoProcessingRef.current = false;
+      setIsVideoProcessing(false);
+      return;
+    }
+
+    // Create a canvas to capture the current frame
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = video.videoWidth;
+    tempCanvas.height = video.videoHeight;
+    const tempCtx = tempCanvas.getContext('2d');
+    if (!tempCtx) return;
+
+    tempCtx.drawImage(video, 0, 0);
+    const frameData = tempCanvas.toDataURL('image/jpeg', 0.8);
+
+    try {
+      const result = await api.detectAndRecognize(frameData);
+      setDetectedFaces(result.faces);
+      
+      // Draw bounding boxes on video canvas
+      const canvas = videoCanvasRef.current;
+      if (canvas) {
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          const videoRect = video.getBoundingClientRect();
+          canvas.width = videoRect.width;
+          canvas.height = videoRect.height;
+          
+          const scaleX = videoRect.width / video.videoWidth;
+          const scaleY = videoRect.height / video.videoHeight;
+          
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          
+          result.faces.forEach((face) => {
+            const { bbox, recognized, person } = face;
+            const x = bbox.x * scaleX;
+            const y = bbox.y * scaleY;
+            const w = bbox.w * scaleX;
+            const h = bbox.h * scaleY;
+
+            const color = recognized ? '#00ff00' : '#ff0000';
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 3;
+            ctx.strokeRect(x, y, w, h);
+
+            const label = person?.name || 'Unknown';
+            ctx.fillStyle = color;
+            ctx.fillRect(x, y - 25, w, 25);
+            ctx.fillStyle = '#000';
+            ctx.font = 'bold 14px Arial';
+            ctx.fillText(label, x + 5, y - 8);
+          });
+        }
+      }
+    } catch (err) {
+      console.error('Video frame processing error:', err);
+    }
+
+    // Continue processing if video is still playing
+    if (videoProcessingRef.current && !video.paused && !video.ended) {
+      setTimeout(processVideoFrame, 100); // Process at ~10fps
+    }
+  }, []);
+
+  const toggleVideoProcessing = () => {
+    if (!videoRef.current) return;
+
+    if (isVideoProcessing) {
+      // Stop processing
+      videoProcessingRef.current = false;
+      setIsVideoProcessing(false);
+      videoRef.current.pause();
+      setIsVideoPlaying(false);
+    } else {
+      // Start processing
+      videoProcessingRef.current = true;
+      setIsVideoProcessing(true);
+      videoRef.current.play();
+      setIsVideoPlaying(true);
+      processVideoFrame();
+    }
+  };
+
+  const handleVideoPlay = () => {
+    setIsVideoPlaying(true);
+    if (!isVideoProcessing) {
+      videoProcessingRef.current = true;
+      setIsVideoProcessing(true);
+      processVideoFrame();
+    }
+  };
+
+  const handleVideoPause = () => {
+    setIsVideoPlaying(false);
+  };
+
+  const handleVideoEnded = () => {
+    setIsVideoPlaying(false);
+    videoProcessingRef.current = false;
+    setIsVideoProcessing(false);
+  };
+
   return (
     <div className={styles.container}>
       <header className={styles.header}>
@@ -322,6 +467,12 @@ export default function Home() {
               onClick={() => setMode('register')}
             >
               ➕ Register
+            </button>
+            <button
+              className={`${styles.modeButton} ${mode === 'video' ? styles.active : ''}`}
+              onClick={() => setMode('video')}
+            >
+              🎬 Video
             </button>
             <button
               className={`${styles.modeButton} ${mode === 'gallery' ? styles.active : ''}`}
@@ -380,9 +531,18 @@ export default function Home() {
               )}
               
               <div className={styles.stats}>
-                <p>Detected Faces: <strong>{detectedFaces.length}</strong></p>
-                <p>Recognized: <strong>{detectedFaces.filter(f => f.recognized).length}</strong></p>
-                <p>Unknown: <strong>{detectedFaces.filter(f => !f.recognized).length}</strong></p>
+                <div className={styles.statItem}>
+                  <span className={styles.statNumber}>{detectedFaces.length}</span>
+                  <span className={styles.statLabel}>Total Faces</span>
+                </div>
+                <div className={styles.statItem + ' ' + styles.statKnown}>
+                  <span className={styles.statNumber}>{detectedFaces.filter(f => f.recognized).length}</span>
+                  <span className={styles.statLabel}>Known</span>
+                </div>
+                <div className={styles.statItem + ' ' + styles.statUnknown}>
+                  <span className={styles.statNumber}>{detectedFaces.filter(f => !f.recognized).length}</span>
+                  <span className={styles.statLabel}>Unknown</span>
+                </div>
               </div>
             </div>
           )}
@@ -455,6 +615,86 @@ export default function Home() {
               >
                 {isProcessing ? '🔄 Registering...' : uploadedImage ? '✅ Register with Upload' : '✅ Capture & Register'}
               </button>
+            </div>
+          )}
+
+          {mode === 'video' && (
+            <div className={styles.videoMode}>
+              <h2>🎬 Video Face Recognition</h2>
+              <p className={styles.videoDescription}>
+                Upload a video file to detect and recognize faces in real-time playback.
+              </p>
+              
+              {!videoUrl ? (
+                <div className={styles.uploadSection}>
+                  <input
+                    ref={videoInputRef}
+                    type="file"
+                    accept="video/*"
+                    onChange={handleVideoUpload}
+                    className={styles.fileInput}
+                    id="videoUpload"
+                  />
+                  <label htmlFor="videoUpload" className={styles.uploadLabel}>
+                    📁 Choose Video File
+                  </label>
+                  <p className={styles.uploadHint}>Supports MP4, WebM, MOV, AVI</p>
+                </div>
+              ) : (
+                <>
+                  <div className={styles.videoWrapper}>
+                    <video
+                      ref={videoRef}
+                      src={videoUrl}
+                      className={styles.videoPlayer}
+                      onPlay={handleVideoPlay}
+                      onPause={handleVideoPause}
+                      onEnded={handleVideoEnded}
+                      controls
+                    />
+                    <canvas ref={videoCanvasRef} className={styles.videoCanvas} />
+                  </div>
+                  
+                  <div className={styles.videoControls}>
+                    <button
+                      onClick={toggleVideoProcessing}
+                      className={`${styles.processButton} ${isVideoProcessing ? styles.processing : ''}`}
+                    >
+                      {isVideoProcessing ? '⏹️ Stop Processing' : '▶️ Start Processing'}
+                    </button>
+                    <button onClick={clearVideo} className={styles.clearButton}>
+                      🗑️ Clear Video
+                    </button>
+                  </div>
+
+                  <div className={styles.stats}>
+                    <div className={styles.statItem}>
+                      <span className={styles.statNumber}>{detectedFaces.length}</span>
+                      <span className={styles.statLabel}>Total Faces</span>
+                    </div>
+                    <div className={styles.statItem + ' ' + styles.statKnown}>
+                      <span className={styles.statNumber}>{detectedFaces.filter(f => f.recognized).length}</span>
+                      <span className={styles.statLabel}>Known</span>
+                    </div>
+                    <div className={styles.statItem + ' ' + styles.statUnknown}>
+                      <span className={styles.statNumber}>{detectedFaces.filter(f => !f.recognized).length}</span>
+                      <span className={styles.statLabel}>Unknown</span>
+                    </div>
+                  </div>
+                  
+                  {detectedFaces.length > 0 && (
+                    <div className={styles.detectedList}>
+                      <h3>Detected in Current Frame:</h3>
+                      {detectedFaces.map((face, i) => (
+                        <div key={i} className={`${styles.detectedItem} ${face.recognized ? styles.known : styles.unknownItem}`}>
+                          {face.recognized ? '✅' : '❌'} {face.person?.name || 'Unknown'}
+                          {face.person?.confidence && ` (${face.person.confidence.toFixed(1)}%)`}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           )}
 
