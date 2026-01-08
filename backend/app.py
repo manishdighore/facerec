@@ -18,10 +18,12 @@ import json
 import base64
 import os
 import uuid
+import hashlib
 from datetime import datetime
 import traceback
 from PIL import Image
 import io
+import time
 
 # Import face detection and recognition modules
 from face_detection.scrfd_detector import SCRFD
@@ -97,6 +99,15 @@ else:
 # Cache for face encodings (for faster real-time detection)
 encodings_cache = {}
 names_cache = {}
+
+# Unknown person tracking
+unknown_faces = {}  # Track unknown faces by session
+unknown_counter = 0  # Global counter for unknown IDs
+
+# Face tracking state - store embeddings for proper similarity comparison
+face_tracking_counter = 0
+face_tracking_embeddings = {}  # Map tracking ID to embedding
+TRACKING_SIMILARITY_THRESHOLD = 0.6  # Threshold for considering same person across frames
 
 # ============================================================================
 # Database Operations
@@ -305,11 +316,33 @@ def recognize_face(face_embedding, people):
         people: List of person records from database
         
     Returns:
-        Dict with 'recognized', 'person' keys
+        Dict with 'recognized', 'person', 'unknown_id', 'tracking_id' keys
     """
+    global unknown_counter, face_tracking_counter
+    
     try:
         if len(people) == 0:
-            return {'recognized': False, 'person': None}
+            return {'recognized': False, 'person': None, 'unknown_id': None, 'tracking_id': None}
+        
+        # Assign tracking ID based on embedding similarity to previous frames
+        tracking_id = None
+        best_tracking_similarity = 0
+        
+        # Compare with all tracked faces from previous frames
+        for tid, tracked_embedding in face_tracking_embeddings.items():
+            similarity = float(np.dot(face_embedding, tracked_embedding) / 
+                             (np.linalg.norm(face_embedding) * np.linalg.norm(tracked_embedding)))
+            if similarity > best_tracking_similarity and similarity >= TRACKING_SIMILARITY_THRESHOLD:
+                best_tracking_similarity = similarity
+                tracking_id = tid
+        
+        # If no match found, assign new tracking ID
+        if tracking_id is None:
+            face_tracking_counter += 1
+            tracking_id = face_tracking_counter
+        
+        # Update tracked embedding (keep it fresh with latest detection)
+        face_tracking_embeddings[tracking_id] = face_embedding.copy()
         
         # Load all known encodings
         known_encodings = []
@@ -324,7 +357,7 @@ def recognize_face(face_embedding, people):
                 known_people.append(person)
         
         if len(known_encodings) == 0:
-            return {'recognized': False, 'person': None}
+            return {'recognized': False, 'person': None, 'unknown_id': None, 'tracking_id': tracking_id}
         
         known_encodings = np.array(known_encodings)
         
@@ -341,14 +374,24 @@ def recognize_face(face_embedding, people):
                     'employee_id': person.get('employee_id'),
                     'similarity': float(score),
                     'confidence': float(score * 100)  # Convert to percentage
-                }
+                },
+                'unknown_id': None,
+                'tracking_id': tracking_id
             }
         else:
-            return {'recognized': False, 'person': None}
+            # Use tracking ID for unknown persons
+            unknown_id = f"Unknown-{tracking_id}"
+            
+            return {
+                'recognized': False, 
+                'person': None,
+                'unknown_id': unknown_id,
+                'tracking_id': tracking_id
+            }
     except Exception as e:
         print(f"Error in recognize_face: {e}")
         traceback.print_exc()
-        return {'recognized': False, 'person': None}
+        return {'recognized': False, 'person': None, 'unknown_id': None, 'tracking_id': None}
 
 
 # ============================================================================
@@ -373,6 +416,7 @@ def health_check():
 @app.route('/api/detect-and-recognize', methods=['POST'])
 def detect_and_recognize():
     """Detect all faces in image and recognize each one"""
+    start_time = time.time()
     try:
         if detector is None or recognizer is None:
             return jsonify({
@@ -383,10 +427,12 @@ def detect_and_recognize():
         
         # Get image from request
         img = None
+        region = None
         if 'image' in request.files:
             img = process_uploaded_file(request.files['image'])
         elif request.json and 'image' in request.json:
             img = base64_to_image(request.json['image'])
+            region = request.json.get('region')  # Get detection region if provided
         
         if img is None:
             return jsonify({'error': 'No valid image provided'}), 400
@@ -395,8 +441,26 @@ def detect_and_recognize():
         img_h, img_w = img.shape[:2]
         print(f"[DEBUG] Input image dimensions: {img_w}x{img_h}")
         
+        # If region is specified, crop the image to that region
+        if region:
+            x, y, w, h = region['x'], region['y'], region['width'], region['height']
+            # Ensure region is within image bounds
+            x = max(0, min(x, img_w - 1))
+            y = max(0, min(y, img_h - 1))
+            w = min(w, img_w - x)
+            h = min(h, img_h - y)
+            img_crop = img[y:y+h, x:x+w]
+            region_offset = (x, y)
+            print(f"[DEBUG] Using detection region: x={x}, y={y}, w={w}, h={h}")
+        else:
+            img_crop = img
+            region_offset = (0, 0)
+        
         # Detect faces
-        detected_faces = detect_faces(img)
+        detect_start = time.time()
+        detected_faces = detect_faces(img_crop)
+        detect_time = (time.time() - detect_start) * 1000
+        print(f"[TIMING] Face detection: {detect_time:.2f}ms")
         
         if detected_faces:
             for i, face_data in enumerate(detected_faces):
@@ -414,33 +478,59 @@ def detect_and_recognize():
         people = load_database()
         
         # Recognize each face
+        recognize_start = time.time()
         results = []
         for face_data in detected_faces:
             landmarks = face_data.get('landmarks')
+            bbox = face_data['bbox']
+            
+            # Adjust bbox coordinates if we cropped the image
+            if region:
+                bbox['x'] += region_offset[0]
+                bbox['y'] += region_offset[1]
             
             if landmarks is not None:
-                # Extract face embedding using aligned face
+                # Adjust landmark coordinates if we cropped
+                if region:
+                    landmarks_adjusted = np.array(landmarks, dtype=np.float32)
+                    landmarks_adjusted[:, 0] += region_offset[0]
+                    landmarks_adjusted[:, 1] += region_offset[1]
+                    landmarks = landmarks_adjusted.tolist()
+                
+                # Extract face embedding using aligned face from original image
                 face_embedding = extract_face_embedding(img, landmarks)
                 
                 if face_embedding is not None:
                     recognition_result = recognize_face(face_embedding, people)
                 else:
-                    recognition_result = {'recognized': False, 'person': None}
+                    recognition_result = {'recognized': False, 'person': None, 'unknown_id': None, 'tracking_id': None}
             else:
-                recognition_result = {'recognized': False, 'person': None}
+                recognition_result = {'recognized': False, 'person': None, 'unknown_id': None, 'tracking_id': None}
             
             results.append({
-                'bbox': face_data['bbox'],
+                'bbox': bbox,
                 'detection_confidence': face_data['confidence'],
                 'recognized': recognition_result['recognized'],
-                'person': recognition_result['person']
+                'person': recognition_result['person'],
+                'unknown_id': recognition_result.get('unknown_id'),
+                'tracking_id': recognition_result.get('tracking_id')
             })
+        
+        recognize_time = (time.time() - recognize_start) * 1000
+        total_time = (time.time() - start_time) * 1000
+        print(f"[TIMING] Face recognition: {recognize_time:.2f}ms")
+        print(f"[TIMING] Total processing: {total_time:.2f}ms")
         
         return jsonify({
             'faces': results,
             'count': len(results),
             'image_width': img_w,
-            'image_height': img_h
+            'image_height': img_h,
+            'latency': {
+                'detection_ms': round(detect_time, 2),
+                'recognition_ms': round(recognize_time, 2),
+                'total_ms': round(total_time, 2)
+            }
         })
     
     except Exception as e:

@@ -1,1 +1,24 @@
-[]
+[
+  {
+    "id": "62cb33d7-1c5d-43ab-a1b7-8f131b571552",
+    "name": "Manish",
+    "email": "",
+    "employee_id": "",
+    "image_path": "C:\\Users\\admin\\Documents\\VSCode\\facerec\\backend\\database\\images\\62cb33d7-1c5d-43ab-a1b7-8f131b571552.jpg",
+    "aligned_path": "C:\\Users\\admin\\Documents\\VSCode\\facerec\\backend\\database\\images\\62cb33d7-1c5d-43ab-a1b7-8f131b571552_aligned.jpg",
+    "encoding_path": "C:\\Users\\admin\\Documents\\VSCode\\facerec\\backend\\database\\encodings\\62cb33d7-1c5d-43ab-a1b7-8f131b571552.npy",
+    "added_date": "2026-01-09T00:39:18.729091",
+    "image_count": 1
+  },
+  {
+    "id": "fd3908ac-e519-4ebb-a3f1-c6f756920db1",
+    "name": "John",
+    "email": "",
+    "employee_id": "",
+    "image_path": "C:\\Users\\admin\\Documents\\VSCode\\facerec\\backend\\database\\images\\fd3908ac-e519-4ebb-a3f1-c6f756920db1.jpg",
+    "aligned_path": "C:\\Users\\admin\\Documents\\VSCode\\facerec\\backend\\database\\images\\fd3908ac-e519-4ebb-a3f1-c6f756920db1_aligned.jpg",
+    "encoding_path": "C:\\Users\\admin\\Documents\\VSCode\\facerec\\backend\\database\\encodings\\fd3908ac-e519-4ebb-a3f1-c6f756920db1.npy",
+    "added_date": "2026-01-09T00:43:52.224683",
+    "image_count": 1
+  }
+]

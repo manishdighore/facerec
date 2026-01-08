@@ -34,6 +34,9 @@ export interface DetectedFace {
   detection_confidence: number;
   recognized: boolean;
   person: RecognizedPerson;
+  unknown_id?: string;
+  tracking_id?: number;  // Backend sends snake_case
+  trackingId?: number;   // For frontend compatibility
 }
 
 export interface DetectionResult {
@@ -42,6 +45,11 @@ export interface DetectionResult {
   message?: string;
   image_width?: number;
   image_height?: number;
+  latency?: {
+    detection_ms: number;
+    recognition_ms: number;
+    total_ms: number;
+  };
 }
 
 export interface RegisterResponse {
@@ -50,9 +58,10 @@ export interface RegisterResponse {
 }
 
 export const api = {
-  async detectAndRecognize(imageBase64: string): Promise<DetectionResult> {
+  async detectAndRecognize(imageBase64: string, region?: { x: number; y: number; width: number; height: number }): Promise<DetectionResult> {
     const response = await axios.post(`${API_BASE_URL}/api/detect-and-recognize`, {
       image: imageBase64,
+      region: region,
     });
     return response.data;
   },

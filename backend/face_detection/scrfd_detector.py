@@ -74,10 +74,13 @@ class SCRFD:
         if self.session is None:
             assert self.model_file is not None
             assert osp.exists(self.model_file), f"Model file not found: {self.model_file}"
+            # Try GPU first, fallback to CPU
+            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
             self.session = onnxruntime.InferenceSession(
                 self.model_file, 
-                providers=['CPUExecutionProvider']
+                providers=providers
             )
+            print(f"SCRFD using provider: {self.session.get_providers()[0]}")
         
         self.center_cache = {}
         self.nms_thresh = 0.4

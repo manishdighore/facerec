@@ -15,6 +15,7 @@ export default function Home() {
   
   const [isProcessing, setIsProcessing] = useState(false);
   const [detectedFaces, setDetectedFaces] = useState<DetectedFace[]>([]);
+  const [videoDetectedFaces, setVideoDetectedFaces] = useState<DetectedFace[]>([]);
   const [error, setError] = useState<string>('');
   const [mode, setMode] = useState<'recognize' | 'register' | 'gallery' | 'video'>('recognize');
   const [registerName, setRegisterName] = useState('');
@@ -26,6 +27,14 @@ export default function Home() {
   const [uploadPreview, setUploadPreview] = useState<string | null>(null);
   const [isRealTime, setIsRealTime] = useState(false);
   const realTimeIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const [detectionInterval, setDetectionInterval] = useState(50); // Default 50ms = 20fps
+  
+  // Detection region (draggable box)
+  const [detectionRegion, setDetectionRegion] = useState({ x: 50, y: 50, width: 400, height: 300 });
+  const [isDragging, setIsDragging] = useState(false);
+  const [isResizing, setIsResizing] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const [enableRegionFilter, setEnableRegionFilter] = useState(false);
   
   // Video processing state
   const [uploadedVideo, setUploadedVideo] = useState<File | null>(null);
@@ -68,6 +77,70 @@ export default function Home() {
     }
     return () => stopRealTimeDetection();
   }, [isRealTime, mode]);
+
+  // Draw detection region overlay when enabled (even without face detection)
+  useEffect(() => {
+    if (!enableRegionFilter) return;
+    
+    let animationFrameId: number;
+    
+    const drawRegionOnly = () => {
+      const canvas = mode === 'recognize' ? canvasRef.current : 
+                     mode === 'video' ? videoCanvasRef.current : null;
+      if (!canvas) return;
+      
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      
+      const videoElement = mode === 'recognize' ? webcamRef.current?.video : 
+                          mode === 'video' ? videoRef.current : null;
+      if (!videoElement) return;
+      
+      const videoRect = videoElement.getBoundingClientRect();
+      if (canvas.width !== videoRect.width || canvas.height !== videoRect.height) {
+        canvas.width = videoRect.width;
+        canvas.height = videoRect.height;
+      }
+      
+      // Only draw if we're not actively processing (to avoid flicker)
+      // The region will be drawn by drawBoundingBoxes during detection
+      if (!isProcessing && !isRealTime && !isVideoProcessing) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        // Draw detection region
+        ctx.strokeStyle = '#00ffff';
+        ctx.lineWidth = 3;
+        ctx.setLineDash([10, 5]);
+        ctx.strokeRect(detectionRegion.x, detectionRegion.y, detectionRegion.width, detectionRegion.height);
+        ctx.setLineDash([]);
+        
+        // Draw 4 corner resize handles
+        const handleSize = 12;
+        ctx.fillStyle = '#00ffff';
+        ctx.fillRect(detectionRegion.x - handleSize/2, detectionRegion.y - handleSize/2, handleSize, handleSize);
+        ctx.fillRect(detectionRegion.x + detectionRegion.width - handleSize/2, detectionRegion.y - handleSize/2, handleSize, handleSize);
+        ctx.fillRect(detectionRegion.x - handleSize/2, detectionRegion.y + detectionRegion.height - handleSize/2, handleSize, handleSize);
+        ctx.fillRect(detectionRegion.x + detectionRegion.width - handleSize/2, detectionRegion.y + detectionRegion.height - handleSize/2, handleSize, handleSize);
+        
+        // Draw label
+        ctx.fillStyle = 'rgba(0, 255, 255, 0.3)';
+        ctx.fillRect(detectionRegion.x, detectionRegion.y - 25, 150, 25);
+        ctx.fillStyle = '#00ffff';
+        ctx.font = 'bold 14px Arial';
+        ctx.fillText('Detection Region', detectionRegion.x + 5, detectionRegion.y - 8);
+      }
+      
+      animationFrameId = requestAnimationFrame(drawRegionOnly);
+    };
+    
+    drawRegionOnly();
+    
+    return () => {
+      if (animationFrameId) cancelAnimationFrame(animationFrameId);
+    };
+  }, [enableRegionFilter, detectionRegion, mode, isProcessing, isRealTime, isVideoProcessing]);
+
+  // Detection region is now drawn directly in drawBoundingBoxes, no separate effect needed
 
   const checkBackendStatus = async () => {
     try {
@@ -148,7 +221,7 @@ export default function Home() {
       ctx.strokeRect(x, y, w, h);
 
       // Draw name label
-      const label = person?.name || 'Unknown';
+      const label = person?.name || (face.unknown_id || 'Unknown');
       const subLabel = person?.employee_id ? `ID: ${person.employee_id}` : '';
       
       // Background for text
@@ -172,10 +245,38 @@ export default function Home() {
         ctx.fillText(`${person.confidence.toFixed(1)}%`, x + w - 50, y - 10);
       }
     });
-  }, []);
+    
+    // Draw detection region AFTER faces so it stays on top
+    if (enableRegionFilter) {
+      ctx.strokeStyle = '#00ffff';
+      ctx.lineWidth = 3;
+      ctx.setLineDash([10, 5]);
+      ctx.strokeRect(detectionRegion.x, detectionRegion.y, detectionRegion.width, detectionRegion.height);
+      ctx.setLineDash([]);
+      
+      // Draw 4 corner resize handles
+      const handleSize = 12;
+      ctx.fillStyle = '#00ffff';
+      // Top-left
+      ctx.fillRect(detectionRegion.x - handleSize/2, detectionRegion.y - handleSize/2, handleSize, handleSize);
+      // Top-right
+      ctx.fillRect(detectionRegion.x + detectionRegion.width - handleSize/2, detectionRegion.y - handleSize/2, handleSize, handleSize);
+      // Bottom-left
+      ctx.fillRect(detectionRegion.x - handleSize/2, detectionRegion.y + detectionRegion.height - handleSize/2, handleSize, handleSize);
+      // Bottom-right
+      ctx.fillRect(detectionRegion.x + detectionRegion.width - handleSize/2, detectionRegion.y + detectionRegion.height - handleSize/2, handleSize, handleSize);
+      
+      // Draw label
+      ctx.fillStyle = 'rgba(0, 255, 255, 0.3)';
+      ctx.fillRect(detectionRegion.x, detectionRegion.y - 25, 150, 25);
+      ctx.fillStyle = '#00ffff';
+      ctx.font = 'bold 14px Arial';
+      ctx.fillText('Detection Region', detectionRegion.x + 5, detectionRegion.y - 8);
+    }
+  }, [enableRegionFilter, detectionRegion]);
 
   const processFrame = useCallback(async () => {
-    if (!webcamRef.current || isProcessing) return;
+    if (!webcamRef.current) return;
 
     const videoElement = webcamRef.current.video;
     if (!videoElement) return;
@@ -183,12 +284,62 @@ export default function Home() {
     const imageSrc = webcamRef.current.getScreenshot();
     if (!imageSrc) return;
 
+    // Get display dimensions
+    const videoRect = videoElement.getBoundingClientRect();
+    const displayWidth = videoRect.width;
+    const displayHeight = videoRect.height;
+    const srcWidth = videoElement.videoWidth;
+    const srcHeight = videoElement.videoHeight;
+
     setIsProcessing(true);
+    const requestStart = performance.now();
     try {
+      // Always send full image to backend
       const result = await api.detectAndRecognize(imageSrc);
+      const requestEnd = performance.now();
+      const roundTrip = requestEnd - requestStart;
       
-      setDetectedFaces(result.faces);
-      drawBoundingBoxes(result.faces, videoElement, result.image_width, result.image_height);
+      if (result.latency) {
+        console.log(`[LATENCY] Round-trip: ${roundTrip.toFixed(2)}ms | Backend: ${result.latency.total_ms}ms (detect: ${result.latency.detection_ms}ms, recognize: ${result.latency.recognition_ms}ms) | Network: ${(roundTrip - result.latency.total_ms).toFixed(2)}ms`);
+      }
+      
+      // Filter faces client-side if region filter is enabled
+      let filteredFaces = result.faces;
+      if (enableRegionFilter) {
+        const regionInSrc = {
+          x: Math.round(detectionRegion.x / displayWidth * srcWidth),
+          y: Math.round(detectionRegion.y / displayHeight * srcHeight),
+          width: Math.round(detectionRegion.width / displayWidth * srcWidth),
+          height: Math.round(detectionRegion.height / displayHeight * srcHeight)
+        };
+        
+        console.log('[FILTER] Region in source coords:', regionInSrc);
+        console.log('[FILTER] Total faces detected:', result.faces.length);
+        
+        filteredFaces = result.faces.filter(face => {
+          const faceCenter = {
+            x: face.bbox.x + face.bbox.w / 2,
+            y: face.bbox.y + face.bbox.h / 2
+          };
+          const inside = faceCenter.x >= regionInSrc.x &&
+                 faceCenter.x <= regionInSrc.x + regionInSrc.width &&
+                 faceCenter.y >= regionInSrc.y &&
+                 faceCenter.y <= regionInSrc.y + regionInSrc.height;
+          console.log(`[FILTER] Face at (${faceCenter.x}, ${faceCenter.y}): ${inside ? 'INSIDE' : 'OUTSIDE'}`);
+          return inside;
+        });
+        
+        console.log('[FILTER] Faces after filtering:', filteredFaces.length);
+      }
+      
+      // Normalize tracking_id to trackingId
+      const normalizedFaces = filteredFaces.map(face => ({
+        ...face,
+        trackingId: face.tracking_id || face.trackingId
+      }));
+      
+      setDetectedFaces(normalizedFaces);
+      drawBoundingBoxes(normalizedFaces, videoElement, result.image_width, result.image_height);
       setError('');
     } catch (err: any) {
       console.error('Detection error:', err);
@@ -196,13 +347,13 @@ export default function Home() {
     } finally {
       setIsProcessing(false);
     }
-  }, [isProcessing, drawBoundingBoxes]);
+  }, [isProcessing, drawBoundingBoxes, enableRegionFilter, detectionRegion]);
 
   const startRealTimeDetection = () => {
     stopRealTimeDetection();
     realTimeIntervalRef.current = setInterval(() => {
       processFrame();
-    }, 100); // Process 10 times per second (100ms interval)
+    }, detectionInterval);
   };
 
   const stopRealTimeDetection = () => {
@@ -210,6 +361,127 @@ export default function Home() {
       clearInterval(realTimeIntervalRef.current);
       realTimeIntervalRef.current = null;
     }
+  };
+
+  // Restart real-time detection when interval changes
+  useEffect(() => {
+    if (isRealTime) {
+      startRealTimeDetection();
+    }
+  }, [detectionInterval]);
+
+  // Mouse handlers for detection region
+  const [resizeCorner, setResizeCorner] = useState<string>('');
+
+  const handleCanvasMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!enableRegionFilter) return;
+    
+    const canvas = e.currentTarget;
+    if (!canvas) return;
+    
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    
+    const handleSize = 15;
+    const region = detectionRegion;
+    
+    // Check if clicking on any corner resize handles
+    const onTopLeft = x >= region.x - handleSize/2 && x <= region.x + handleSize/2 &&
+                      y >= region.y - handleSize/2 && y <= region.y + handleSize/2;
+    const onTopRight = x >= region.x + region.width - handleSize/2 && x <= region.x + region.width + handleSize/2 &&
+                       y >= region.y - handleSize/2 && y <= region.y + handleSize/2;
+    const onBottomLeft = x >= region.x - handleSize/2 && x <= region.x + handleSize/2 &&
+                         y >= region.y + region.height - handleSize/2 && y <= region.y + region.height + handleSize/2;
+    const onBottomRight = x >= region.x + region.width - handleSize/2 && x <= region.x + region.width + handleSize/2 &&
+                          y >= region.y + region.height - handleSize/2 && y <= region.y + region.height + handleSize/2;
+    
+    if (onTopLeft) {
+      setIsResizing(true);
+      setResizeCorner('topLeft');
+      setDragStart({ x, y });
+    } else if (onTopRight) {
+      setIsResizing(true);
+      setResizeCorner('topRight');
+      setDragStart({ x, y });
+    } else if (onBottomLeft) {
+      setIsResizing(true);
+      setResizeCorner('bottomLeft');
+      setDragStart({ x, y });
+    } else if (onBottomRight) {
+      setIsResizing(true);
+      setResizeCorner('bottomRight');
+      setDragStart({ x, y });
+    } else if (x >= region.x && x <= region.x + region.width &&
+               y >= region.y && y <= region.y + region.height) {
+      setIsDragging(true);
+      setDragStart({ x: x - region.x, y: y - region.y });
+    }
+  };
+
+  const handleCanvasMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!enableRegionFilter) return;
+    
+    const canvas = e.currentTarget;
+    if (!canvas) return;
+    
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    
+    if (isDragging) {
+      const newX = Math.max(0, Math.min(x - dragStart.x, canvas.width - detectionRegion.width));
+      const newY = Math.max(0, Math.min(y - dragStart.y, canvas.height - detectionRegion.height));
+      setDetectionRegion(prev => ({
+        ...prev,
+        x: newX,
+        y: newY
+      }));
+    } else if (isResizing) {
+      const minSize = 50;
+      
+      if (resizeCorner === 'topLeft') {
+        const deltaX = x - dragStart.x;
+        const deltaY = y - dragStart.y;
+        setDetectionRegion(prev => ({
+          x: Math.max(0, prev.x + deltaX),
+          y: Math.max(0, prev.y + deltaY),
+          width: Math.max(minSize, prev.width - deltaX),
+          height: Math.max(minSize, prev.height - deltaY)
+        }));
+        setDragStart({ x, y });
+      } else if (resizeCorner === 'topRight') {
+        const deltaY = y - dragStart.y;
+        setDetectionRegion(prev => ({
+          ...prev,
+          y: Math.max(0, prev.y + deltaY),
+          width: Math.max(minSize, x - prev.x),
+          height: Math.max(minSize, prev.height - deltaY)
+        }));
+        setDragStart({ x, y });
+      } else if (resizeCorner === 'bottomLeft') {
+        const deltaX = x - dragStart.x;
+        setDetectionRegion(prev => ({
+          ...prev,
+          x: Math.max(0, prev.x + deltaX),
+          width: Math.max(minSize, prev.width - deltaX),
+          height: Math.max(minSize, y - prev.y)
+        }));
+        setDragStart({ x, y });
+      } else if (resizeCorner === 'bottomRight') {
+        setDetectionRegion(prev => ({
+          ...prev,
+          width: Math.max(minSize, x - prev.x),
+          height: Math.max(minSize, y - prev.y)
+        }));
+      }
+    }
+  };
+
+  const handleCanvasMouseUp = () => {
+    setIsDragging(false);
+    setIsResizing(false);
+    setResizeCorner('');
   };
 
   const captureAndDetect = useCallback(async () => {
@@ -357,8 +629,44 @@ export default function Home() {
     const frameData = tempCanvas.toDataURL('image/jpeg', 0.8);
 
     try {
+      // Always send full image to backend
+      const videoRect = video.getBoundingClientRect();
+      const displayWidth = videoRect.width;
+      const displayHeight = videoRect.height;
+      const srcWidth = video.videoWidth;
+      const srcHeight = video.videoHeight;
+      
       const result = await api.detectAndRecognize(frameData);
-      setDetectedFaces(result.faces);
+      
+      // Filter faces client-side if region filter is enabled
+      let filteredFaces = result.faces;
+      if (enableRegionFilter) {
+        const regionInSrc = {
+          x: Math.round(detectionRegion.x / displayWidth * srcWidth),
+          y: Math.round(detectionRegion.y / displayHeight * srcHeight),
+          width: Math.round(detectionRegion.width / displayWidth * srcWidth),
+          height: Math.round(detectionRegion.height / displayHeight * srcHeight)
+        };
+        
+        filteredFaces = result.faces.filter(face => {
+          const faceCenter = {
+            x: face.bbox.x + face.bbox.w / 2,
+            y: face.bbox.y + face.bbox.h / 2
+          };
+          return faceCenter.x >= regionInSrc.x &&
+                 faceCenter.x <= regionInSrc.x + regionInSrc.width &&
+                 faceCenter.y >= regionInSrc.y &&
+                 faceCenter.y <= regionInSrc.y + regionInSrc.height;
+        });
+      }
+      
+      // Normalize tracking_id to trackingId
+      const normalizedFaces = filteredFaces.map(face => ({
+        ...face,
+        trackingId: face.tracking_id || face.trackingId
+      }));
+      
+      setVideoDetectedFaces(normalizedFaces);
       
       // Draw bounding boxes on video canvas
       const canvas = videoCanvasRef.current;
@@ -374,8 +682,8 @@ export default function Home() {
           
           ctx.clearRect(0, 0, canvas.width, canvas.height);
           
-          result.faces.forEach((face) => {
-            const { bbox, recognized, person } = face;
+          normalizedFaces.forEach((face) => {
+            const { bbox, recognized, person, unknown_id } = face;
             const x = bbox.x * scaleX;
             const y = bbox.y * scaleY;
             const w = bbox.w * scaleX;
@@ -386,13 +694,41 @@ export default function Home() {
             ctx.lineWidth = 3;
             ctx.strokeRect(x, y, w, h);
 
-            const label = person?.name || 'Unknown';
+            const label = person?.name || (unknown_id || 'Unknown');
             ctx.fillStyle = color;
             ctx.fillRect(x, y - 25, w, 25);
             ctx.fillStyle = '#000';
             ctx.font = 'bold 14px Arial';
             ctx.fillText(label, x + 5, y - 8);
           });
+          
+          // Draw detection region on video if enabled
+          if (enableRegionFilter) {
+            ctx.strokeStyle = '#00ffff';
+            ctx.lineWidth = 3;
+            ctx.setLineDash([10, 5]);
+            ctx.strokeRect(detectionRegion.x, detectionRegion.y, detectionRegion.width, detectionRegion.height);
+            ctx.setLineDash([]);
+            
+            // Draw 4 corner resize handles
+            const handleSize = 12;
+            ctx.fillStyle = '#00ffff';
+            // Top-left
+            ctx.fillRect(detectionRegion.x - handleSize/2, detectionRegion.y - handleSize/2, handleSize, handleSize);
+            // Top-right
+            ctx.fillRect(detectionRegion.x + detectionRegion.width - handleSize/2, detectionRegion.y - handleSize/2, handleSize, handleSize);
+            // Bottom-left
+            ctx.fillRect(detectionRegion.x - handleSize/2, detectionRegion.y + detectionRegion.height - handleSize/2, handleSize, handleSize);
+            // Bottom-right
+            ctx.fillRect(detectionRegion.x + detectionRegion.width - handleSize/2, detectionRegion.y + detectionRegion.height - handleSize/2, handleSize, handleSize);
+            
+            // Draw label
+            ctx.fillStyle = 'rgba(0, 255, 255, 0.3)';
+            ctx.fillRect(detectionRegion.x, detectionRegion.y - 25, 150, 25);
+            ctx.fillStyle = '#00ffff';
+            ctx.font = 'bold 14px Arial';
+            ctx.fillText('Detection Region', detectionRegion.x + 5, detectionRegion.y - 8);
+          }
         }
       }
     } catch (err) {
@@ -403,7 +739,7 @@ export default function Home() {
     if (videoProcessingRef.current && !video.paused && !video.ended) {
       setTimeout(processVideoFrame, 100); // Process at ~10fps
     }
-  }, []);
+  }, [enableRegionFilter, detectionRegion]);
 
   const toggleVideoProcessing = () => {
     if (!videoRef.current) return;
@@ -498,7 +834,18 @@ export default function Home() {
                   }}
                 />
                 {mode === 'recognize' && (
-                  <canvas ref={canvasRef} className={styles.canvas} />
+                  <canvas 
+                    ref={canvasRef} 
+                    className={styles.canvas}
+                    onMouseDown={handleCanvasMouseDown}
+                    onMouseMove={handleCanvasMouseMove}
+                    onMouseUp={handleCanvasMouseUp}
+                    onMouseLeave={handleCanvasMouseUp}
+                    style={{ 
+                      cursor: isDragging || isResizing ? 'grabbing' : (enableRegionFilter ? 'pointer' : 'default'),
+                      pointerEvents: enableRegionFilter ? 'auto' : 'none'
+                    }}
+                  />
                 )}
               </div>
             </div>
@@ -506,6 +853,16 @@ export default function Home() {
 
           {mode === 'recognize' && (
             <div className={styles.controls}>
+              <div className={styles.toggleContainer}>
+                <label className={styles.toggleLabel}>
+                  <input
+                    type="checkbox"
+                    checked={enableRegionFilter}
+                    onChange={(e) => setEnableRegionFilter(e.target.checked)}
+                  />
+                  Enable Detection Region
+                </label>
+              </div>
               <div className={styles.toggleContainer}>
                 <label className={styles.toggleLabel}>
                   <input
@@ -519,6 +876,27 @@ export default function Home() {
                   </span>
                 </label>
               </div>
+              
+              {isRealTime && (
+                <div className={styles.sliderContainer}>
+                  <label className={styles.sliderLabel}>
+                    Detection Speed: {(1000/detectionInterval).toFixed(0)} FPS ({detectionInterval}ms)
+                  </label>
+                  <input
+                    type="range"
+                    min="30"
+                    max="200"
+                    step="10"
+                    value={detectionInterval}
+                    onChange={(e) => setDetectionInterval(Number(e.target.value))}
+                    className={styles.slider}
+                  />
+                  <div className={styles.sliderLabels}>
+                    <span>Fast (33 FPS)</span>
+                    <span>Slow (5 FPS)</span>
+                  </div>
+                </div>
+              )}
               
               {!isRealTime && (
                 <button
@@ -581,7 +959,7 @@ export default function Home() {
               />
               
               <div className={styles.uploadSection}>
-                <label className={styles.uploadLabel}>
+                <label htmlFor="registerImageUpload" className={styles.uploadLabel}>
                   📁 Or upload an image
                 </label>
                 <input
@@ -590,6 +968,7 @@ export default function Home() {
                   accept="image/*"
                   onChange={handleFileUpload}
                   className={styles.fileInput}
+                  id="registerImageUpload"
                 />
                 {uploadPreview && (
                   <div className={styles.uploadPreview}>
@@ -652,10 +1031,29 @@ export default function Home() {
                       onEnded={handleVideoEnded}
                       controls
                     />
-                    <canvas ref={videoCanvasRef} className={styles.videoCanvas} />
+                    <canvas ref={videoCanvasRef} className={styles.videoCanvas}
+                      onMouseDown={handleCanvasMouseDown}
+                      onMouseMove={handleCanvasMouseMove}
+                      onMouseUp={handleCanvasMouseUp}
+                      onMouseLeave={handleCanvasMouseUp}
+                      style={{ 
+                        cursor: isDragging || isResizing ? 'grabbing' : (enableRegionFilter ? 'pointer' : 'default'),
+                        pointerEvents: enableRegionFilter ? 'auto' : 'none'
+                      }}
+                    />
                   </div>
                   
                   <div className={styles.videoControls}>
+                    <div className={styles.toggleContainer}>
+                      <label className={styles.toggleLabel}>
+                        <input
+                          type="checkbox"
+                          checked={enableRegionFilter}
+                          onChange={(e) => setEnableRegionFilter(e.target.checked)}
+                        />
+                        Enable Detection Region
+                      </label>
+                    </div>
                     <button
                       onClick={toggleVideoProcessing}
                       className={`${styles.processButton} ${isVideoProcessing ? styles.processing : ''}`}
@@ -681,18 +1079,6 @@ export default function Home() {
                       <span className={styles.statLabel}>Unknown</span>
                     </div>
                   </div>
-                  
-                  {detectedFaces.length > 0 && (
-                    <div className={styles.detectedList}>
-                      <h3>Detected in Current Frame:</h3>
-                      {detectedFaces.map((face, i) => (
-                        <div key={i} className={`${styles.detectedItem} ${face.recognized ? styles.known : styles.unknownItem}`}>
-                          {face.recognized ? '✅' : '❌'} {face.person?.name || 'Unknown'}
-                          {face.person?.confidence && ` (${face.person.confidence.toFixed(1)}%)`}
-                        </div>
-                      ))}
-                    </div>
-                  )}
                 </>
               )}
             </div>
@@ -751,20 +1137,25 @@ export default function Home() {
           )}
         </div>
 
-        {mode === 'recognize' && detectedFaces.length > 0 && (
+        {(mode === 'recognize' || mode === 'video') && (
           <div className={styles.rightPanel}>
             <h2>Detected Faces</h2>
             <div className={styles.facesList}>
-              {detectedFaces.map((face, index) => (
+              {(mode === 'recognize' ? detectedFaces : videoDetectedFaces).length === 0 ? (
+                <div className={styles.emptyState}>No faces detected yet</div>
+              ) : (
+                (mode === 'recognize' ? detectedFaces : videoDetectedFaces)
+                  .sort((a, b) => (a.trackingId || 0) - (b.trackingId || 0))
+                  .map((face, index) => (
                 <div 
-                  key={index} 
+                  key={face.trackingId || index} 
                   className={`${styles.faceCard} ${face.recognized ? styles.recognized : styles.unknown}`}
                 >
                   <div className={styles.faceCardHeader}>
-                    {face.recognized ? '✅' : '❌'} Face #{index + 1}
+                    {face.recognized ? '✅' : '❌'} Face #{face.trackingId || (index + 1)}
                   </div>
                   <div className={styles.faceCardBody}>
-                    <p><strong>Name:</strong> {face.person?.name || 'Unknown'}</p>
+                    <p><strong>Name:</strong> {face.person?.name || face.unknown_id || 'Unknown'}</p>
                     {face.person?.employee_id && (
                       <p><strong>ID:</strong> {face.person.employee_id}</p>
                     )}
@@ -775,7 +1166,8 @@ export default function Home() {
                     <p><strong>Size:</strong> {face.bbox.w}x{face.bbox.h}</p>
                   </div>
                 </div>
-              ))}
+              ))
+              )}
             </div>
           </div>
         )}

@@ -34,10 +34,13 @@ class ArcFaceRecognizer:
         if self.session is None:
             assert self.model_file is not None
             assert os.path.exists(self.model_file), f"Model file not found: {self.model_file}"
+            # Try GPU first, fallback to CPU
+            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
             self.session = onnxruntime.InferenceSession(
                 self.model_file,
-                providers=['CPUExecutionProvider']
+                providers=providers
             )
+            print(f"ArcFace using provider: {self.session.get_providers()[0]}")
         
         self._init_vars()
 
